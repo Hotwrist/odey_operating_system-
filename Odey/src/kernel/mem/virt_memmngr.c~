@@ -1,0 +1,117 @@
+#include "virt_memmngr.h"
+
+//================variables=====================
+uint32_t *temp_mem;
+extern uint32_t *mem_bitmap;
+extern uint32_t bitmap_size;
+//extern kernel_end;
+extern uint32_t _kernel_start;
+page_dir_t *current_dir = 0;
+//==============================================
+
+//===============PUBLIC FUNCTIONS====================
+void switch_page_directory(page_dir_t *);
+void alloc_frame(page_dir_t *, uint32_t, uint8_t, uint8_t);
+void paging_init();
+//===================================================
+
+//==============PUBLIC FUNCTIONS IMPLEMENTATION=========================
+void * virtual2phys(page_dir_t * dir, void * virtual_addr) {
+    uint32_t page_dir_idx = PAGEDIR_INDEX(virtual_addr), page_tbl_idx = PAGETBL_INDEX(virtual_addr), page_frame_offset = PAGEFRAME_INDEX(virtual_addr);
+    if(!dir->ref_tables[page_dir_idx]) {
+        print_err("virtual2phys: page dir entry does not exist\n");
+        return NULL;
+    }
+    page_table_t * table = dir->ref_tables[page_dir_idx];
+    if(!table->pages[page_tbl_idx].present) {
+        print_err("virtual2phys: page table entry does not exist\n");
+        return NULL;
+    }
+    uint32_t t = table->pages[page_tbl_idx].frame_addr;
+    t = (t << 12) + page_frame_offset;
+    return (void*)t;
+}
+
+void switch_page_dir(page_dir_t *dir)
+{
+    current_dir = dir;
+    asm volatile("mov %0, %%cr3":: "r"(&dir->ref_tables));
+}
+
+void alloc_frame(page_dir_t *page_dir,  uint32_t virt_addr, uint8_t is_kernel, uint8_t is_writable)
+{
+	if(!page_dir) return;
+
+	else
+	{
+		uint32_t page_dir_index = PAGEDIR_INDEX(virt_addr);
+		uint32_t page_table_index = PAGETBL_INDEX(virt_addr);
+
+		void *phys_mem = phys_mmngr_alloc_block();
+
+		page_table_t *page_table = page_dir->ref_tables[page_dir_index];
+
+		page_table->pages[page_table_index].frame_addr = (physical_addr)phys_mem;
+		page_table->pages[page_table_index].present = 0x1;
+		page_table->pages[page_table_index].user = is_kernel;
+		page_table->pages[page_table_index].read_write = is_writable; 
+
+        //page_table->pages[PAGETBL_INDEX(virt_addr)] = 
+	} 
+}
+
+void *dumb_kmalloc(uint32_t size, int align) {
+    void *ret = temp_mem;
+    // If it's not aligned, align it first
+    if(align && !IS_ALIGN(ret))
+        ret = (void*)PAGE_ALIGN(ret);
+    temp_mem = temp_mem + size;
+    return ret;
+}
+
+
+void allocate_region(page_dir_t * dir, uint32_t start_va, uint32_t end_va, int iden_map, int is_kernel, int is_writable) {
+    uint32_t start = start_va & 0xfffff000;
+    uint32_t end = end_va & 0xfffff000;
+    while(start <= end) {
+        if(iden_map)
+            alloc_frame(dir, start, is_kernel, is_writable);
+        else
+            alloc_frame(dir, start, is_kernel, is_writable);
+        start = start + PAGE_SIZE;
+    }
+}
+
+// Remap memory used by the kernel, and enable paging, again
+void paging_init()
+{
+    temp_mem = (_kernel_start + _kernel_end + 4096);
+	
+    page_dir_t *page_dir = (page_dir_t*)dumb_kmalloc(sizeof(page_dir_t), 1);
+    
+    temp_mem += 4096;
+    page_table_t *page_table = (page_table_t *)dumb_kmalloc(sizeof(page_table_t), 1);  
+
+    uint32_t addr = 0;
+    uint32_t i;
+
+    for(i = 0; i < 1024; i++)
+    {
+        page_table->pages[i].frame_addr = addr | 0x3;
+        addr += 4096;
+    }
+
+    page_dir->ref_tables[0] = page_table;
+    page_dir->ref_tables[0]->pages[0].frame_addr |= 0x3;
+
+    for(i=1; i < 1024; ++i)
+    {
+        page_dir->ref_tables[i]->pages[i]->frame_addr = 0|0x2;
+    }   
+
+    switch_page_dir(page_dir);
+    enable_paging();
+      
+}
+
+//=======================================================================
